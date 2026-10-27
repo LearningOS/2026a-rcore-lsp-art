@@ -199,6 +199,10 @@ pub fn user_byte_addr(token: usize, addr: usize, write: bool) -> Option<usize> {
     }
     let va = VirtAddr::from(addr);
     let pte = PageTable::from_token(token).translate(va.floor())?;
+    // RISC-V 中 R=0、W=1 是保留的无效编码，不能仅凭 W 位允许内核写入。
+    if pte.writable() && !pte.readable() {
+        return None;
+    }
     let required = PTEFlags::V | PTEFlags::U | if write { PTEFlags::W } else { PTEFlags::R };
     if !pte.flags().contains(required) {
         return None;
