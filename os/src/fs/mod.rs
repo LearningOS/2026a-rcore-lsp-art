@@ -7,6 +7,10 @@ use crate::mm::UserBuffer;
 
 /// trait File for all file types
 pub trait File: Send + Sync {
+    /// 普通文件提供元信息；标准输入输出不提供 inode。
+    fn stat(&self) -> Option<Stat> {
+        None
+    }
     /// the file readable?
     fn readable(&self) -> bool;
     /// the file writable?
@@ -46,5 +50,5 @@ bitflags! {
     }
 }
 
-pub use inode::{list_apps, open_file, OSInode, OpenFlags};
+pub use inode::{list_apps, open_file, OSInode, OpenFlags, ROOT_INODE};
 pub use stdio::{Stdin, Stdout};

@@ -23,7 +23,19 @@ impl TaskManager {
     }
     /// Take a process out of the ready queue
     pub fn fetch(&mut self) -> Option<Arc<TaskControlBlock>> {
-        self.ready_queue.pop_front()
+        // Codex 协助实现；每次选 stride 最小的就绪进程，按权重累计步长。
+        let index = self
+            .ready_queue
+            .iter()
+            .enumerate()
+            .min_by_key(|(_, task)| task.inner_exclusive_access().stride)
+            .map(|(index, _)| index)?;
+        let task = self.ready_queue.remove(index).unwrap();
+        {
+            let mut inner = task.inner_exclusive_access();
+            inner.stride += (1u128 << 64) / inner.priority as u128;
+        }
+        Some(task)
     }
 }
 
