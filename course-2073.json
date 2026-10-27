@@ -1,0 +1,20 @@
+{
+  "schema": 1,
+  "courseId": 2073,
+  "repository": "LearningOS/2026a-rcore-lsp-art",
+  "user": "lsp-art",
+  "totalScore": 500,
+  "chapters": {
+    "ch3": {
+      "points": "7/7",
+      "score": 100,
+      "commit": "494bdc70524f23e50b5fae0089bc914cd708cbec"
+    }
+  },
+  "score": 100,
+  "upload": {
+    "status": "pending",
+    "runId": "40461791220",
+    "runAttempt": "1"
+  }
+}
