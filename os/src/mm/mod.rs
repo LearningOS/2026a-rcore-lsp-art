@@ -24,3 +24,5 @@ pub fn init() {
     frame_allocator::init_frame_allocator();
     KERNEL_SPACE.exclusive_access().activate();
 }
+
+pub use page_table::write_user_bytes;

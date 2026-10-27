@@ -37,6 +37,115 @@ pub struct MemorySet {
 }
 
 impl MemorySet {
+    /// 按页建立匿名映射；失败时回滚本次已分配的数据页。
+    /// Codex 协助实现；依据官方第四章 mmap/munmap 接口规范。
+    pub fn mmap(&mut self, start: usize, len: usize, prot: usize) -> isize {
+        if start % PAGE_SIZE != 0 || prot == 0 || prot & !7 != 0 {
+            return -1;
+        }
+        if len == 0 {
+            return 0;
+        }
+        let end = match start
+            .checked_add(len)
+            .and_then(|v| v.checked_add(PAGE_SIZE - 1))
+        {
+            Some(v) if v <= (1usize << 38) => v / PAGE_SIZE * PAGE_SIZE,
+            _ => return -1,
+        };
+        let range = VPNRange::new(VirtAddr::from(start).floor(), VirtAddr::from(end).floor());
+        for vpn in range {
+            if self
+                .page_table
+                .translate(vpn)
+                .map_or(false, |pte| pte.is_valid())
+            {
+                return -1;
+            }
+        }
+        let permission = MapPermission::U | MapPermission::from_bits((prot << 1) as u8).unwrap();
+        let mut area = MapArea::new(start.into(), end.into(), MapType::Framed, permission);
+        for vpn in range {
+            let frame = match frame_alloc() {
+                Some(frame) => frame,
+                None => {
+                    for mapped in area.data_frames.keys() {
+                        self.page_table.unmap(*mapped);
+                    }
+                    return -1;
+                }
+            };
+            if !self.page_table.try_map(
+                vpn,
+                frame.ppn,
+                PTEFlags::from_bits(permission.bits).unwrap(),
+            ) {
+                for mapped in area.data_frames.keys() {
+                    self.page_table.unmap(*mapped);
+                }
+                return -1;
+            }
+            area.data_frames.insert(vpn, frame);
+        }
+        self.areas.push(area);
+        0
+    }
+
+    /// 全部检查成功后解除映射，并将原区域分成左右两段，保留后续 fork 的语义。
+    pub fn munmap(&mut self, start: usize, len: usize) -> isize {
+        if start % PAGE_SIZE != 0 {
+            return -1;
+        }
+        if len == 0 {
+            return 0;
+        }
+        let end = match start
+            .checked_add(len)
+            .and_then(|v| v.checked_add(PAGE_SIZE - 1))
+        {
+            Some(v) if v <= (1usize << 38) => v / PAGE_SIZE * PAGE_SIZE,
+            _ => return -1,
+        };
+        let first = VirtAddr::from(start).floor();
+        let last = VirtAddr::from(end).floor();
+        for vpn in VPNRange::new(first, last) {
+            if !self.page_table.translate(vpn).map_or(false, |pte| {
+                pte.is_valid() && pte.flags().contains(PTEFlags::U)
+            }) {
+                return -1;
+            }
+        }
+        for vpn in VPNRange::new(first, last) {
+            self.page_table.unmap(vpn);
+        }
+        let mut kept = Vec::new();
+        for mut area in core::mem::take(&mut self.areas) {
+            let a = area.vpn_range.get_start();
+            let b = area.vpn_range.get_end();
+            if a == b || b <= first || a >= last {
+                kept.push(area);
+                continue;
+            }
+            let right_frames = area.data_frames.split_off(&last);
+            let removed_frames = area.data_frames.split_off(&first);
+            drop(removed_frames);
+            if b > last {
+                kept.push(MapArea {
+                    vpn_range: VPNRange::new(last, b),
+                    data_frames: right_frames,
+                    map_type: area.map_type,
+                    map_perm: area.map_perm,
+                });
+            }
+            if a < first {
+                area.vpn_range = VPNRange::new(a, first);
+                kept.push(area);
+            }
+        }
+        self.areas = kept;
+        0
+    }
+
     /// Create a new empty `MemorySet`.
     pub fn new_bare() -> Self {
         Self {
