@@ -17,6 +17,7 @@ mod task;
 use crate::loader::{get_app_data, get_num_app};
 use crate::sync::UPSafeCell;
 use crate::trap::TrapContext;
+use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 use lazy_static::*;
 use switch::__switch;
@@ -46,6 +47,7 @@ struct TaskManagerInner {
     tasks: Vec<TaskControlBlock>,
     /// id of current `Running` task
     current_task: usize,
+    syscall_counts: BTreeMap<(usize, usize), usize>,
 }
 
 lazy_static! {
@@ -64,6 +66,7 @@ lazy_static! {
                 UPSafeCell::new(TaskManagerInner {
                     tasks,
                     current_task: 0,
+                    syscall_counts: BTreeMap::new(),
                 })
             },
         }
@@ -201,4 +204,28 @@ pub fn current_trap_cx() -> &'static mut TrapContext {
 /// Change the current 'Running' task's program break
 pub fn change_program_brk(size: i32) -> Option<usize> {
     TASK_MANAGER.change_current_program_brk(size)
+}
+
+/// Codex 协助实现；参考官方第三章 sys_trace 规范，统计包含本次调用。
+pub fn record_syscall(id: usize) {
+    let mut inner = TASK_MANAGER.inner.exclusive_access();
+    let current = inner.current_task;
+    *inner.syscall_counts.entry((current, id)).or_insert(0) += 1;
+}
+
+/// 查询当前任务的系统调用次数。
+pub fn syscall_count(id: usize) -> usize {
+    let inner = TASK_MANAGER.inner.exclusive_access();
+    inner
+        .syscall_counts
+        .get(&(inner.current_task, id))
+        .copied()
+        .unwrap_or(0)
+}
+
+/// 修改当前任务地址空间，借用在返回用户态前结束。
+pub fn with_current_memory(f: impl FnOnce(&mut crate::mm::MemorySet) -> isize) -> isize {
+    let mut inner = TASK_MANAGER.inner.exclusive_access();
+    let current = inner.current_task;
+    f(&mut inner.tasks[current].memory_set)
 }
