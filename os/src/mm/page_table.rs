@@ -274,3 +274,47 @@ impl Iterator for UserBufferIterator {
         }
     }
 }
+
+/// 检查用户权限并取得单字节物理地址；Codex 协助实现，依据课程 SV39 规范。
+pub fn user_byte_addr(token: usize, addr: usize, write: bool) -> Option<usize> {
+    if addr >= (1usize << 38) {
+        return None;
+    }
+    let va = VirtAddr::from(addr);
+    let pte = PageTable::from_token(token).translate(va.floor())?;
+    // RISC-V 中 R=0、W=1 是保留的无效编码，不能仅凭 W 位允许内核写入。
+    if pte.writable() && !pte.readable() {
+        return None;
+    }
+    let required = PTEFlags::V | PTEFlags::U | if write { PTEFlags::W } else { PTEFlags::R };
+    if !pte.flags().contains(required) {
+        return None;
+    }
+    Some((pte.ppn().0 << 12) + va.page_offset())
+}
+
+/// 先检查整个用户缓冲区，再按页拷贝，支持结构体横跨两个物理页。
+pub fn write_user_bytes(token: usize, start: usize, bytes: &[u8]) -> bool {
+    let end = match start.checked_add(bytes.len()) {
+        Some(end) if end <= (1usize << 38) => end,
+        _ => return false,
+    };
+    let mut cursor = start;
+    while cursor < end {
+        if user_byte_addr(token, cursor, true).is_none() {
+            return false;
+        }
+        cursor = end.min((cursor / 4096 + 1) * 4096);
+    }
+    cursor = start;
+    while cursor < end {
+        let pa = user_byte_addr(token, cursor, true).unwrap();
+        let size = (4096 - cursor % 4096).min(end - cursor);
+        unsafe {
+            core::slice::from_raw_parts_mut(pa as *mut u8, size)
+                .copy_from_slice(&bytes[cursor - start..cursor - start + size]);
+        }
+        cursor += size;
+    }
+    true
+}

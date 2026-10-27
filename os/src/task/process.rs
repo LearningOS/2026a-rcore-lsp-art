@@ -49,6 +49,12 @@ pub struct ProcessControlBlockInner {
     pub semaphore_list: Vec<Option<Arc<Semaphore>>>,
     /// condvar list
     pub condvar_list: Vec<Option<Arc<Condvar>>>,
+    /// 是否拒绝会产生死锁的资源申请。
+    pub deadlock_enabled: bool,
+    /// 互斥锁的资源矩阵。
+    pub mutex_resources: crate::sync::deadlock::ResourceTable,
+    /// 信号量的资源矩阵。
+    pub sem_resources: crate::sync::deadlock::ResourceTable,
 }
 
 impl ProcessControlBlockInner {
@@ -119,6 +125,9 @@ impl ProcessControlBlock {
                     mutex_list: Vec::new(),
                     semaphore_list: Vec::new(),
                     condvar_list: Vec::new(),
+                    deadlock_enabled: false,
+                    mutex_resources: Default::default(),
+                    sem_resources: Default::default(),
                 })
             },
         });
@@ -245,6 +254,9 @@ impl ProcessControlBlock {
                     mutex_list: Vec::new(),
                     semaphore_list: Vec::new(),
                     condvar_list: Vec::new(),
+                    deadlock_enabled: false,
+                    mutex_resources: Default::default(),
+                    sem_resources: Default::default(),
                 })
             },
         });

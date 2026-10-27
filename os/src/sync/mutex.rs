@@ -1,6 +1,6 @@
 //! Mutex (spin-like and blocking(sleep))
 
-use super::UPSafeCell;
+use super::{deadlock, UPSafeCell};
 use crate::task::TaskControlBlock;
 use crate::task::{block_current_and_run_next, suspend_current_and_run_next};
 use crate::task::{current_task, wakeup_task};
@@ -9,7 +9,7 @@ use alloc::{collections::VecDeque, sync::Arc};
 /// Mutex trait
 pub trait Mutex: Sync + Send {
     /// Lock the mutex
-    fn lock(&self);
+    fn lock(&self) -> isize;
     /// Unlock the mutex
     fn unlock(&self);
 }
@@ -17,12 +17,14 @@ pub trait Mutex: Sync + Send {
 /// Spinlock Mutex struct
 pub struct MutexSpin {
     locked: UPSafeCell<bool>,
+    id: usize,
 }
 
 impl MutexSpin {
     /// Create a new spinlock mutex
-    pub fn new() -> Self {
+    pub fn new(id: usize) -> Self {
         Self {
+            id,
             locked: unsafe { UPSafeCell::new(false) },
         }
     }
@@ -30,7 +32,10 @@ impl MutexSpin {
 
 impl Mutex for MutexSpin {
     /// Lock the spinlock mutex
-    fn lock(&self) {
+    fn lock(&self) -> isize {
+        if !deadlock::request(false, self.id) {
+            return -0xDEAD;
+        }
         trace!("kernel: MutexSpin::lock");
         loop {
             let mut locked = self.locked.exclusive_access();
@@ -40,7 +45,8 @@ impl Mutex for MutexSpin {
                 continue;
             } else {
                 *locked = true;
-                return;
+                deadlock::grant(false, self.id, deadlock::task_id(&current_task().unwrap()));
+                return 0;
             }
         }
     }
@@ -49,12 +55,14 @@ impl Mutex for MutexSpin {
         trace!("kernel: MutexSpin::unlock");
         let mut locked = self.locked.exclusive_access();
         *locked = false;
+        deadlock::release(false, self.id);
     }
 }
 
 /// Blocking Mutex struct
 pub struct MutexBlocking {
     inner: UPSafeCell<MutexBlockingInner>,
+    id: usize,
 }
 
 pub struct MutexBlockingInner {
@@ -64,9 +72,10 @@ pub struct MutexBlockingInner {
 
 impl MutexBlocking {
     /// Create a new blocking mutex
-    pub fn new() -> Self {
+    pub fn new(id: usize) -> Self {
         trace!("kernel: MutexBlocking::new");
         Self {
+            id,
             inner: unsafe {
                 UPSafeCell::new(MutexBlockingInner {
                     locked: false,
@@ -79,7 +88,10 @@ impl MutexBlocking {
 
 impl Mutex for MutexBlocking {
     /// lock the blocking mutex
-    fn lock(&self) {
+    fn lock(&self) -> isize {
+        if !deadlock::request(false, self.id) {
+            return -0xDEAD;
+        }
         trace!("kernel: MutexBlocking::lock");
         let mut mutex_inner = self.inner.exclusive_access();
         if mutex_inner.locked {
@@ -88,7 +100,9 @@ impl Mutex for MutexBlocking {
             block_current_and_run_next();
         } else {
             mutex_inner.locked = true;
+            deadlock::grant(false, self.id, deadlock::task_id(&current_task().unwrap()));
         }
+        0
     }
 
     /// unlock the blocking mutex
@@ -96,7 +110,9 @@ impl Mutex for MutexBlocking {
         trace!("kernel: MutexBlocking::unlock");
         let mut mutex_inner = self.inner.exclusive_access();
         assert!(mutex_inner.locked);
+        deadlock::release(false, self.id);
         if let Some(waking_task) = mutex_inner.wait_queue.pop_front() {
+            deadlock::grant(false, self.id, deadlock::task_id(&waking_task));
             wakeup_task(waking_task);
         } else {
             mutex_inner.locked = false;

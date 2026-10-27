@@ -1,6 +1,6 @@
 //! Semaphore
 
-use crate::sync::UPSafeCell;
+use crate::sync::{deadlock, UPSafeCell};
 use crate::task::{block_current_and_run_next, current_task, wakeup_task, TaskControlBlock};
 use alloc::{collections::VecDeque, sync::Arc};
 
@@ -8,6 +8,7 @@ use alloc::{collections::VecDeque, sync::Arc};
 pub struct Semaphore {
     /// semaphore inner
     pub inner: UPSafeCell<SemaphoreInner>,
+    id: usize,
 }
 
 pub struct SemaphoreInner {
@@ -17,9 +18,10 @@ pub struct SemaphoreInner {
 
 impl Semaphore {
     /// Create a new semaphore
-    pub fn new(res_count: usize) -> Self {
+    pub fn new(res_count: usize, id: usize) -> Self {
         trace!("kernel: Semaphore::new");
         Self {
+            id,
             inner: unsafe {
                 UPSafeCell::new(SemaphoreInner {
                     count: res_count as isize,
@@ -34,15 +36,20 @@ impl Semaphore {
         trace!("kernel: Semaphore::up");
         let mut inner = self.inner.exclusive_access();
         inner.count += 1;
+        deadlock::release(true, self.id);
         if inner.count <= 0 {
             if let Some(task) = inner.wait_queue.pop_front() {
+                deadlock::grant(true, self.id, deadlock::task_id(&task));
                 wakeup_task(task);
             }
         }
     }
 
     /// down operation of semaphore
-    pub fn down(&self) {
+    pub fn down(&self) -> isize {
+        if !deadlock::request(true, self.id) {
+            return -0xDEAD;
+        }
         trace!("kernel: Semaphore::down");
         let mut inner = self.inner.exclusive_access();
         inner.count -= 1;
@@ -50,6 +57,9 @@ impl Semaphore {
             inner.wait_queue.push_back(current_task().unwrap());
             drop(inner);
             block_current_and_run_next();
+        } else {
+            deadlock::grant(true, self.id, deadlock::task_id(&current_task().unwrap()));
         }
+        0
     }
 }
